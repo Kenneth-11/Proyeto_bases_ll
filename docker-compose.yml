@@ -1,0 +1,105 @@
+name: medical-distributed
+
+services:
+  pg:
+    build:
+      context: ./docker/postgres
+      dockerfile: Dockerfile
+    image: medical/pg16-fdw:latest
+    container_name: medical_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DB}
+      TZ: America/Costa_Rica
+    ports:
+      - "${PG_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./docker/postgres/conf/freetds.conf:/etc/freetds/freetds.conf:ro
+      - ./sql/postgres:/sql:ro
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - max_connections=120
+    networks:
+      - medical_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: medical_mssql
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      MSSQL_PID: Developer
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB}
+      TZ: America/Costa_Rica
+    ports:
+      - "${MSSQL_PORT}:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    networks:
+      - medical_net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' -b -o /dev/null || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  mongo:
+    image: mongo:7.0
+    container_name: medical_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB}
+      TZ: America/Costa_Rica
+    ports:
+      - "${MONGO_PORT}:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./mongodb:/scripts:ro
+    networks:
+      - medical_net
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok' | grep -q 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+networks:
+  medical_net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  mssql_data:
+  mongo_data:

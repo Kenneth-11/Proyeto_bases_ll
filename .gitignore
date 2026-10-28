@@ -1,0 +1,10 @@
+.env
+*.log
+*.bak
+pgdata/
+mssql_data/
+mongo_data/
+.idea/
+.vscode/
+__pycache__/
+*.tmp

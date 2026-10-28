@@ -1,0 +1,258 @@
+﻿SISTEMA DISTRIBUIDO DE ESTUDIOS MEDICOS
+Consultas de validacion y resultados esperados
+================================================
+
+Ejecutar desde la raiz del proyecto:
+
+  docker exec -it medical_pg psql -U postgres -d medical_oltp
+
+Los conteos corresponden al dataset base, antes y despues de demo.ps1
+(la demo limpia sus propios datos).
+
+
+A. FRAGMENTACION HORIZONTAL
+---------------------------
+
+A.1 Pacientes por region
+SELECT region, count(*) AS pacientes
+FROM operativo.v_pacientes_todos
+GROUP BY region
+ORDER BY region;
+
+Esperado:
+  alajuela | 5
+  cartago  | 5
+  san_jose | 5
+
+A.2 Total de pacientes
+SELECT count(*) FROM operativo.v_pacientes_todos;
+Esperado: 15
+
+A.3 Estudios por region
+SELECT region, count(*) AS estudios
+FROM operativo.v_estudios_todos
+GROUP BY region
+ORDER BY region;
+
+Esperado:
+  alajuela | 5
+  cartago  | 5
+  san_jose | 5
+
+A.4 Rangos de identificadores
+SELECT 'san_jose' AS region, min(id_paciente), max(id_paciente) FROM san_jose.pacientes
+UNION ALL
+SELECT 'alajuela', min(id_paciente), max(id_paciente) FROM alajuela.pacientes
+UNION ALL
+SELECT 'cartago',  min(id_paciente), max(id_paciente) FROM cartago.pacientes;
+
+Esperado:
+  san_jose | 10001 | 10005
+  alajuela | 20001 | 20005
+  cartago  | 30001 | 30005
+
+
+B. INTEGRACION CON SQL SERVER (tds_fdw)
+---------------------------------------
+
+B.1 Pacientes en SQL Server
+SELECT count(*) FROM integracion_ext.paciente_integracion;
+Esperado: 15
+
+B.2 Facturas externas
+SELECT count(*) FROM integracion_ext.facturas_externas;
+Esperado: 16
+
+B.3 Instituciones
+SELECT count(*) FROM integracion_ext.instituciones;
+Esperado: 3
+
+B.4 Convenios
+SELECT count(*) FROM integracion_ext.convenios;
+Esperado: 3
+
+B.5 Resumen de facturacion
+SELECT count(*) FROM integracion_ext.resumen_facturacion;
+Esperado: 15
+
+B.6 Vista paciente + facturacion
+SELECT count(*) FROM api_web.v_paciente_facturacion;
+Esperado: 15
+
+B.7 Estados de facturacion
+SELECT estado_facturacion, count(*)
+FROM api_web.v_paciente_facturacion
+GROUP BY estado_facturacion
+ORDER BY estado_facturacion;
+
+Esperado (orden alfabetico):
+  PAGADA    | 6
+  PENDIENTE | 8
+  RECHAZADA | 1
+
+B.8 Facturacion por institucion
+SELECT codigo_institucion, facturas, monto_total
+FROM api_web.v_facturacion_institucion
+ORDER BY codigo_institucion;
+
+Esperado: 3 filas (INS, CCSS, MAPFRE) con facturas que suman 16.
+
+
+C. INTEGRACION CON MONGODB (mongo_fdw)
+--------------------------------------
+
+C.1 Estudios en MongoDB
+SELECT count(*) FROM reportes_ext.resultados_estudios;
+Esperado: 15
+
+C.2 Medicos en MongoDB
+SELECT count(*) FROM reportes_ext.medicos;
+Esperado: 9
+
+C.3 Vista estudios + analitica
+SELECT count(*) FROM api_web.v_estudios_analitica;
+Esperado: 15
+
+C.4 Ingresos y ticket promedio
+SELECT count(*), sum(ingresos), round(avg(ingresos), 2)
+FROM reportes_ext.resultados_estudios;
+
+Esperado: 15 | 455000 | 30333.33
+
+C.5 Documentos con resultado anidado (mongosh)
+El subdocumento resultado no se expone por mongo_fdw; se consulta en MongoDB:
+
+  docker exec -it medical_mongo mongosh --quiet `
+    -u root -p "Mongo_Med_2026!" --authenticationDatabase admin `
+    --eval "db.getSiblingDB('reportes_medicos').resultados_estudios.countDocuments({'resultado.hallazgo': {$exists: true}})"
+
+Esperado: 15
+
+C.6 Un documento de ejemplo (mongosh)
+
+  docker exec -it medical_mongo mongosh --quiet `
+    -u root -p "Mongo_Med_2026!" --authenticationDatabase admin `
+    --eval "JSON.stringify(db.getSiblingDB('reportes_medicos').resultados_estudios.findOne({id_estudio: 11001}), null, 2)"
+
+Esperado:
+  id_estudio 11001
+  paciente   Ana Rodriguez Mora
+  diagnostico R10.4
+  resultado  {"hallazgo": "Sin alteraciones", "medida": "12 mm", "conclusion": "Normal"}
+
+
+D. MONGODB DIRECTO
+------------------
+
+Ejecutar:
+
+  docker exec -it medical_mongo mongosh --quiet `
+    -u root -p "Mongo_Med_2026!" --authenticationDatabase admin `
+    -e "MONGO_DB=reportes_medicos" `
+    /scripts/03_aggregations.js
+
+Esperado:
+  - Productividad por medico y tipo: varias filas.
+  - Indicadores mensuales por sucursal: 3 filas para 2026-10.
+  - Detalle con $lookup a medicos: 15 filas.
+  - Diagnosticos mas frecuentes: Z00.0 con total 6; E78.5, R10.4 y Z01.6
+    con total 2; el resto con total 1.
+  - Resumen global: estudios 15, ingresos 455000, ticket_promedio 30333.33.
+  - productividad_medicos actualizada con 15 documentos.
+
+
+E. SEGURIDAD Y ROLES
+--------------------
+
+E.1 Roles existentes
+SELECT rolname, rolcanlogin, rolsuper
+FROM pg_roles
+WHERE rolname IN (
+  'usr_fdw_pg_mssql',
+  'usr_fdw_pg_mongo',
+  'usr_api_web',
+  'usr_api_mobile'
+)
+ORDER BY rolname;
+
+Esperado: 4 filas, todas con rolcanlogin = t y rolsuper = f.
+
+E.2 API web autenticada (desde el host)
+  $env:PGPASSWORD = "ApiWeb_2026!"
+  psql -h 127.0.0.1 -p 55432 -U usr_api_web -d medical_oltp `
+    -c "SELECT count(*) FROM api_web.v_paciente_facturacion;"
+Esperado: 15
+
+E.3 API movil autenticada
+  $env:PGPASSWORD = "ApiMobile_2026!"
+  psql -h 127.0.0.1 -p 55432 -U usr_api_mobile -d medical_oltp `
+    -c "SELECT count(*) FROM api_mobile.v_paciente_resumen;"
+Esperado: 15
+
+E.4 API web no puede leer tablas internas
+  psql -h 127.0.0.1 -p 55432 -U usr_api_web -d medical_oltp `
+    -c "SELECT count(*) FROM operativo.v_pacientes_todos;"
+Esperado: ERROR: permission denied for schema operativo
+
+E.5 API web solo ve sus vistas
+SELECT grantee, table_schema, table_name, privilege_type
+FROM information_schema.role_table_grants
+WHERE grantee IN ('usr_api_web', 'usr_api_mobile')
+ORDER BY grantee, table_schema, table_name;
+
+Esperado: 5 filas (3 de api_web y 2 de api_mobile), solo SELECT.
+
+
+F. OUTBOX Y SINCRONIZACION
+--------------------------
+
+F.1 Eventos pendientes
+SELECT count(*)
+FROM auditoria.outbox_eventos
+WHERE estado = 'PENDIENTE';
+Esperado: 0
+
+F.2 Ultimos eventos
+SELECT id_evento, id_estudio, region, estado, intentos
+FROM auditoria.outbox_eventos
+ORDER BY id_evento DESC
+LIMIT 5;
+Esperado tras bootstrap: sin filas o solo eventos de la demo ya limpiados.
+
+F.3 Ultimas sincronizaciones
+SELECT id_estudio, operacion, resultado, ejecutado_en
+FROM auditoria.bitacora_sincronizacion
+ORDER BY id_bitacora DESC
+LIMIT 5;
+Esperado: filas SYNC_MONGO con resultado OK.
+
+
+G. PRUEBA DE FALLO (OPCIONAL, MANUAL)
+-------------------------------------
+
+1. docker stop medical_mongo
+2. SELECT operativo.sp_registrar_estudio(
+       'san_jose', 10001, 3, 501,
+       jsonb_build_object('hallazgo', 'Prueba de fallo'),
+       'R10.4', 'Prueba de outbox');
+3. Verificar outbox PENDIENTE.
+4. docker start medical_mongo
+5. SELECT operativo.sp_reintentar_outbox();
+6. Verificar outbox SINCRONIZADO.
+7. Limpiar el estudio de prueba para no alterar los conteos.
+
+
+H. RESUMEN DE CONTEOS BASE
+--------------------------
+
+Pacientes locales                 15
+Pacientes SQL Server              15
+Facturas SQL Server               16
+Instituciones SQL Server           3
+Convenios SQL Server               3
+Documentos MongoDB                15
+Medicos MongoDB                    9
+Vista paciente/facturacion        15
+Vista estudios/analitica          15
+Outbox pendientes                  0
+
