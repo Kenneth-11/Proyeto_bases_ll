@@ -53,7 +53,7 @@ Host Windows
         |
         +-- medical_pg      postgres:16 + tds_fdw + mongo_fdw   :55432 -> 5432
         +-- medical_mssql   SQL Server 2022 Developer            :51433 -> 1433
-        +-- medical_mongo   MongoDB 7.0                          :52717 -> 27017
+        +-- medical_mongo   MongoDB 7.0                          :37017 -> 27017
 ```
 
 Los contenedores se resuelven por nombre dentro de `medical_net`:
@@ -103,24 +103,36 @@ solo recibe la proyeccion analitica del estudio.
 Cliente
   |
   v
-operativo.sp_registrar_estudio(region, paciente, tipo, medico, resultado, ...)
+CALL operativo.sp_registrar_estudio(region, paciente, tipo, medico, resultado, ...)
   |
-  +--> INSERT en <region>.ordenes
-  +--> INSERT en <region>.estudios
-  +--> INSERT en <region>.diagnosticos (opcional)
-  +--> INSERT en auditoria.outbox_eventos (PENDIENTE)
+  +--> fn_registrar_estudio_local()
+  |      +--> INSERT en <region>.ordenes
+  |      +--> INSERT en <region>.estudios
+  |      +--> INSERT en <region>.diagnosticos (opcional)
+  |      +--> INSERT en auditoria.outbox_eventos (PENDIENTE)
+  |
+  +--> COMMIT   (la transaccion local queda confirmada)
   |
   v
 operativo.fn_sincronizar_estudio()
   |
-  +--> UPDATE o INSERT en reportes_ext.resultados_estudios (mongo_fdw)
+  +--> UPDATE o INSERT en reportes_ext.resultados_estudios (mongo_fdw,
+  |    incluye resultado_json)
   +--> UPDATE auditoria.outbox_eventos (SINCRONIZADO)
   +--> INSERT auditoria.bitacora_sincronizacion
 ```
 
-El procedimiento devuelve el `id_estudio` generado. Si la escritura remota
-falla, el estudio local queda confirmado y el evento permanece `PENDIENTE` para
-reintento.
+El procedimiento devuelve el `id_estudio` generado (parametro `INOUT`). Si la
+escritura remota falla, el estudio local ya esta confirmado y el evento
+permanece `PENDIENTE` para reintento.
+
+### 5.1.1 Exportacion de agregados
+
+```text
+operativo.sp_exportar_indicadores()
+  = GROUP BY periodo, sucursal sobre operativo.v_estudios_todos (3 regiones)
+  --> DELETE + INSERT en reportes_ext.indicadores_mensuales (mongo_fdw)
+```
 
 ### 5.2 Consulta distribuida
 

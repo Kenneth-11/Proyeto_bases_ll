@@ -17,17 +17,14 @@ services:
       - "${PG_PORT}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/conf/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./docker/postgres/conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - ./docker/postgres/conf/freetds.conf:/etc/freetds/freetds.conf:ro
       - ./sql/postgres:/sql:ro
     command:
       - postgres
       - -c
-      - hba_file=/etc/postgresql/pg_hba.conf
-      - -c
-      - log_min_duration_statement=500
-      - -c
-      - max_connections=120
+      - config_file=/etc/postgresql/postgresql.conf
     networks:
       - medical_net
     healthcheck:

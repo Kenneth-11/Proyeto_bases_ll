@@ -45,7 +45,10 @@ CREATE FOREIGN TABLE reportes_ext.resultados_estudios (
     fecha        timestamptz,
     estado       text,
     diagnostico  text,
-    ingresos     numeric(12,2)
+    ingresos     numeric(12,2),
+    -- mongo_fdw no escribe subdocumentos: el resultado clinico viaja como
+    -- texto JSON y mongodb/03_aggregations.js lo convierte en "resultado".
+    resultado_json text
 )
 SERVER mongo_reportes
 OPTIONS (database 'reportes_medicos', collection 'resultados_estudios');

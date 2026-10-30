@@ -39,6 +39,7 @@
 - [x] Minimo privilegio sobre esquemas y tablas.
 - [x] APIs sin acceso directo a tablas base.
 - [x] Autenticacion SCRAM para conexiones TCP en PostgreSQL.
+- [x] `pg_hba.conf` con politica distinta por perfil (FDW solo red interna, APIs solo `medical_oltp`, resto `reject`).
 - [x] Login de solo lectura en SQL Server para el FDW.
 - [x] Usuario MongoDB limitado a `readWrite` sobre `reportes_medicos`.
 - [x] Secretos fuera del repositorio (`.env` ignorado).
@@ -48,6 +49,8 @@
 
 - [x] Transaccion local atomica para el registro del estudio.
 - [x] Patron outbox para la sincronizacion analitica.
+- [x] Sincronizacion con MongoDB despues del `COMMIT` local (`PROCEDURE` con `COMMIT`).
+- [x] Exportacion de indicadores agregados PostgreSQL -> MongoDB (`sp_exportar_indicadores`).
 - [x] Reintento idempotente por `id_estudio`.
 - [x] Bitacora de sincronizacion.
 - [x] Documentacion de la ventana de inconsistencia.
@@ -62,9 +65,12 @@
 - [x] Scripts MongoDB (`mongodb/01` a `03`).
 - [x] Scripts PostgreSQL (`sql/postgres/00` a `09`).
 - [x] Scripts PowerShell (`up`, `bootstrap`, `verify`, `demo`, `down`).
-- [x] Documentacion `docs/01` a `08`.
+- [x] Documentacion `docs/01` a `09` (incluye referencias bibliograficas).
+- [x] `postgresql.conf`, `pg_hba.conf` y `freetds.conf` en `docker/postgres/conf/`.
 - [x] Consultas y resultados esperados en `tests/`.
-- [ ] Grabar el video de demostracion.
+- [ ] Grabar el video de demostracion (**5 a 8 minutos**, narrado por los integrantes; ver `docs/07_guion_video.md`).
+- [ ] Revisar y completar `docs/09_referencias.md` (fuentes realmente consultadas).
+- [ ] No incluir `.env` en el zip que se sube a Moodle.
 - [x] Completar nombres y fecha en este checklist.
 
 ## 7. Evidencia de validacion
@@ -77,6 +83,7 @@ Salida esperada de `.\scripts\verify.ps1`:
 [ok] Pacientes en SQL Server = 15
 [ok] Facturas en SQL Server = 16
 [ok] Estudios en MongoDB (FDW) = 15
+[ok] Indicadores en MongoDB (FDW) = 3
 [ok] Vista web paciente/facturacion = 15
 [ok] Vista web estudios/analitica = 15
 [ok] Outbox pendientes = 0
@@ -95,6 +102,7 @@ Salida esperada de `.\scripts\verify.ps1`:
 [ok] API web autenticado = 15
 [ok] API movil autenticado = 15
 [ok] usr_api_web no puede leer operativo.v_pacientes_todos
+[ok] pg_hba.conf rechaza a usr_api_web fuera de medical_oltp
 
 Verificacion completada correctamente.
 ```

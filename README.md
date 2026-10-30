@@ -108,7 +108,7 @@ los valores por defecto del entorno academico.
 |----------|-------------|------------|-------------------|
 | PostgreSQL | 55432 | `medical_pg` | `postgres` |
 | SQL Server | 51433 | `medical_mssql` | `sa` |
-| MongoDB | 52717 | `medical_mongo` | `root` |
+| MongoDB | 37017 | `medical_mongo` | `root` |
 
 Usuarios de integracion y aplicacion:
 
@@ -158,6 +158,11 @@ demostracion para dejar el dataset base intacto.
 - [Transacciones distribuidas](docs/06_transacciones_distribuidas.md)
 - [Guion del video](docs/07_guion_video.md)
 - [Checklist de entrega](docs/08_checklist_entrega.md)
+- [Referencias bibliograficas](docs/09_referencias.md)
+
+Configuracion del servidor PostgreSQL versionada en el repo:
+`docker/postgres/conf/postgresql.conf`, `docker/postgres/conf/pg_hba.conf` y
+`docker/postgres/conf/freetds.conf`.
 
 ## Limitaciones conocidas
 
@@ -169,12 +174,18 @@ demostracion para dejar el dataset base intacto.
 - `mongo_fdw` resuelve el user mapping con el usuario de la sesion. Por eso se
   crean mappings tambien para los roles de las APIs que consumen vistas
   federadas.
-- `mongo_fdw` no proyecta subdocumentos como columnas. Los documentos base
-  incluyen `resultado` anidado y las actualizaciones lo conservan, pero los
-  estudios nuevos insertados por FDW solo escriben los campos planos; el
-  resultado detallado queda en PostgreSQL y en el payload del outbox.
-- Las reglas `pg_hba.conf` usan `scram-sha-256` para conexiones de red y
-  `trust` solo para socket local dentro del contenedor.
+- `mongo_fdw` no escribe subdocumentos. Los estudios nuevos viajan con el
+  resultado como texto (`resultado_json`) y `mongodb/03_aggregations.js` lo
+  convierte en el subdocumento `resultado`.
+- `sp_registrar_estudio` es un `PROCEDURE` que hace `COMMIT` antes de escribir
+  en MongoDB; debe invocarse con `CALL` fuera de un `BEGIN` explicito.
+- `pg_hba.conf` tiene una regla por perfil: FDW solo desde la red Docker, APIs
+  solo hacia `medical_oltp`, `trust` unicamente para `postgres` por socket
+  local, y `reject` para todo lo demas. Si se cambia `PG_DB`, actualizar
+  tambien `pg_hba.conf`.
+- Si ya tenia el stack levantado con la version anterior, recrear el
+  contenedor de PostgreSQL para que tome `postgresql.conf`:
+  `docker compose up -d --force-recreate pg` y luego `.\scripts\bootstrap.ps1`.
 
 ## Solucion de problemas
 
@@ -207,6 +218,17 @@ docker ps --format "{{.Names}} {{.Status}}"
 
 Si aun esta iniciando, esperar y repetir `.\scripts\bootstrap.ps1`. El script
 es idempotente y puede ejecutarse varias veces.
+
+### "ports are not available ... bind: An attempt was made to access a socket in a way forbidden"
+
+Windows (Hyper-V/WSL) reserva rangos de puertos dinamicos. Ver cuales:
+
+```powershell
+netsh int ipv4 show excludedportrange protocol=tcp
+```
+
+Si `PG_PORT`, `MSSQL_PORT` o `MONGO_PORT` cae en uno de esos rangos, cambiarlo
+en `.env` (por eso MongoDB usa `37017` y no `52717`).
 
 ### `psql` en el host no autentica
 
