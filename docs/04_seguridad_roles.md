@@ -51,7 +51,7 @@ transacciones inactivas.
 | Objeto | `usr_fdw_pg_mssql` | `usr_fdw_pg_mongo` | `usr_api_web` | `usr_api_mobile` |
 |--------|--------------------|--------------------|---------------|------------------|
 | `catalogo.*` | USAGE de esquema | USAGE de esquema | No | No |
-| `operativo.*` | USAGE de esquema | USAGE de esquema + EXECUTE de funciones | No | No |
+| `operativo.*` | USAGE de esquema | USAGE de esquema + EXECUTE de funciones de sincronizacion/exportacion (`SECURITY DEFINER`) | No | No |
 | `integracion_ext.*` | USAGE + SELECT | No | No | No |
 | `reportes_ext.*` | No | USAGE + SELECT/INSERT/UPDATE/DELETE | No | No |
 | `api_web.*` | No | No | USAGE + SELECT | No |
@@ -65,21 +65,55 @@ federadas se ejecutan con el usuario de la sesion. Aun asi, no pueden leer las
 tablas foraneas directamente: no tienen `SELECT` sobre `integracion_ext` ni
 `reportes_ext`.
 
+### 3.1 Funciones SECURITY DEFINER
+
+`fn_sincronizar_estudio`, `sp_reintentar_outbox`, `sp_exportar_todos_estudios`
+y `sp_exportar_indicadores` son `SECURITY DEFINER` con
+`SET search_path = pg_catalog, pg_temp`. Asi `usr_fdw_pg_mongo` puede
+sincronizar y exportar hacia MongoDB sin recibir permisos sobre los esquemas
+regionales. Se revoca `EXECUTE` a `PUBLIC` y se otorga solo a ese perfil.
+
+`sp_registrar_estudio` es un `PROCEDURE` con `COMMIT` y PostgreSQL no permite
+control de transacciones en procedimientos `SECURITY DEFINER`; por eso lo
+ejecuta el rol administrador/operativo y no se otorga a perfiles de
+integracion.
+
 ## 4. Autenticacion en PostgreSQL
 
 `docker/postgres/conf/pg_hba.conf`:
 
 ```text
-local   all   all                  trust
-host    all   all   127.0.0.1/32   scram-sha-256
-host    all   all   ::1/128        scram-sha-256
-host    all   all   all            scram-sha-256
+local   all            postgres                       trust
+local   all            all                            reject
+host    all            postgres          samenet      scram-sha-256
+host    medical_oltp   usr_fdw_pg_mssql  samenet      scram-sha-256
+host    medical_oltp   usr_fdw_pg_mongo  samenet      scram-sha-256
+host    medical_oltp   usr_api_web       0.0.0.0/0    scram-sha-256
+host    medical_oltp   usr_api_web       ::/0         scram-sha-256
+host    medical_oltp   usr_api_mobile    0.0.0.0/0    scram-sha-256
+host    medical_oltp   usr_api_mobile    ::/0         scram-sha-256
+host    all            all               0.0.0.0/0    reject
+host    all            all               ::/0         reject
 ```
 
-- `trust` solo aplica al socket local dentro del contenedor, usado por el
-  bootstrap.
-- Toda conexion TCP, incluida la red Docker, exige `scram-sha-256`.
-- Las contrasenas se almacenan con SCRAM, no en texto plano.
+- **Politica diferenciada por perfil**: cada rol tiene su propia regla de base
+  y origen. Los perfiles internos (FDW) solo entran desde la red Docker
+  (`samenet`); los perfiles externos (APIs) pueden entrar desde fuera, pero
+  solo a `medical_oltp`.
+- `trust` aplica unicamente a `postgres` por socket local dentro del
+  contenedor (bootstrap). Cualquier otro rol por socket local se rechaza.
+- Toda conexion TCP exige `scram-sha-256` (`password_encryption =
+  scram-sha-256` en `postgresql.conf`).
+- La ultima regla rechaza cualquier combinacion no listada.
+- `log_connections = on` deja en la bitacora que perfil se conecto y desde
+  donde.
+
+Prueba de rechazo por `pg_hba.conf` (base no permitida):
+
+```powershell
+psql -h 127.0.0.1 -p 55432 -U usr_api_web -d postgres -c "SELECT 1;"
+# FATAL: pg_hba.conf rejects connection for host "...", user "usr_api_web", database "postgres"
+```
 
 Prueba de autenticacion externa:
 

@@ -65,7 +65,7 @@ Esperado: 16
 
 B.3 Instituciones
 SELECT count(*) FROM integracion_ext.instituciones;
-Esperado: 3
+Esperado: 5 (INS, CCSS, MAPFRE, HOSP-MX, MIN-SAL)
 
 B.4 Convenios
 SELECT count(*) FROM integracion_ext.convenios;
@@ -95,7 +95,8 @@ SELECT codigo_institucion, facturas, monto_total
 FROM api_web.v_facturacion_institucion
 ORDER BY codigo_institucion;
 
-Esperado: 3 filas (INS, CCSS, MAPFRE) con facturas que suman 16.
+Esperado: 5 filas. INS, CCSS y MAPFRE con facturas que suman 16;
+HOSP-MX y MIN-SAL con 0 facturas (LEFT JOIN).
 
 
 C. INTEGRACION CON MONGODB (mongo_fdw)
@@ -224,18 +225,39 @@ SELECT id_estudio, operacion, resultado, ejecutado_en
 FROM auditoria.bitacora_sincronizacion
 ORDER BY id_bitacora DESC
 LIMIT 5;
-Esperado: filas SYNC_MONGO con resultado OK.
+Esperado: filas SYNC_MONGO y EXPORT_INDICADORES con resultado OK.
+
+F.4 Indicadores exportados desde PostgreSQL
+SELECT periodo, sucursal, total_estudios, ingresos, ticket_promedio
+FROM reportes_ext.indicadores_mensuales
+ORDER BY sucursal;
+
+Esperado:
+  2026-10 | Alajuela | 5 | 155000 | 31000
+  2026-10 | Cartago  | 5 | 150000 | 30000
+  2026-10 | San Jose | 5 | 150000 | 30000
+
+F.5 Configuracion cargada (postgresql.conf / pg_hba.conf)
+SHOW config_file;
+SHOW hba_file;
+SELECT line_number, type, database, user_name, address, auth_method
+FROM pg_hba_file_rules ORDER BY line_number;
+
+Esperado: /etc/postgresql/postgresql.conf, /etc/postgresql/pg_hba.conf y
+una regla por perfil (postgres, usr_fdw_pg_mssql, usr_fdw_pg_mongo,
+usr_api_web, usr_api_mobile) mas las reglas finales "reject".
 
 
 G. PRUEBA DE FALLO (OPCIONAL, MANUAL)
 -------------------------------------
 
 1. docker stop medical_mongo
-2. SELECT operativo.sp_registrar_estudio(
+2. CALL operativo.sp_registrar_estudio(
        'san_jose', 10001, 3, 501,
        jsonb_build_object('hallazgo', 'Prueba de fallo'),
-       'R10.4', 'Prueba de outbox');
-3. Verificar outbox PENDIENTE.
+       'R10.4', 'Prueba de outbox', NULL);
+   (CALL fuera de BEGIN: el procedimiento hace COMMIT antes de ir a MongoDB.)
+3. Verificar que el estudio existe en san_jose.estudios y el outbox esta PENDIENTE.
 4. docker start medical_mongo
 5. SELECT operativo.sp_reintentar_outbox();
 6. Verificar outbox SINCRONIZADO.
@@ -248,10 +270,11 @@ H. RESUMEN DE CONTEOS BASE
 Pacientes locales                 15
 Pacientes SQL Server              15
 Facturas SQL Server               16
-Instituciones SQL Server           3
+Instituciones SQL Server           5
 Convenios SQL Server               3
 Documentos MongoDB                15
 Medicos MongoDB                    9
+Indicadores MongoDB                3
 Vista paciente/facturacion        15
 Vista estudios/analitica          15
 Outbox pendientes                  0

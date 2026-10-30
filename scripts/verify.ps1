@@ -25,7 +25,8 @@ Assert-Equal 'Facturas en SQL Server'         (Get-IntResult (Invoke-PsqlQuery '
 Assert-Equal 'Estudios en MongoDB (FDW)'      (Get-IntResult (Invoke-PsqlQuery 'SELECT count(*) FROM reportes_ext.resultados_estudios;' -TupleOnly)) 15
 Assert-Equal 'Vista web paciente/facturacion' (Get-IntResult (Invoke-PsqlQuery 'SELECT count(*) FROM api_web.v_paciente_facturacion;' -TupleOnly)) 15
 Assert-Equal 'Vista web estudios/analitica'   (Get-IntResult (Invoke-PsqlQuery 'SELECT count(*) FROM api_web.v_estudios_analitica;' -TupleOnly)) 15
-Assert-Equal 'Outbox pendientes'              (Get-IntResult (Invoke-PsqlQuery "SELECT count(*) FROM auditoria.outbox_eventos WHERE estado = 'PENDIENTE';" -TupleOnly)) 0
+Assert-Equal 'Indicadores en MongoDB (FDW)'    (Get-IntResult (Invoke-PsqlQuery 'SELECT count(*) FROM reportes_ext.indicadores_mensuales;' -TupleOnly)) 3
+Assert-Equal 'Outbox pendientes'             (Get-IntResult (Invoke-PsqlQuery "SELECT count(*) FROM auditoria.outbox_eventos WHERE estado = 'PENDIENTE';" -TupleOnly)) 0
 
 Write-Host ''
 Write-Host '== Consulta distribuida de ejemplo (PostgreSQL + SQL Server) =='
@@ -78,6 +79,13 @@ if ($null -eq $psqlCommand) {
             throw 'FALLO: usr_api_web pudo leer una vista interna sin privilegios.'
         }
         Write-Host '[ok] usr_api_web no puede leer operativo.v_pacientes_todos'
+
+        # pg_hba.conf: usr_api_web solo puede conectarse a la base operativa.
+        & psql -h 127.0.0.1 -p $env:PG_PORT -U $env:API_WEB_USER -d postgres -v ON_ERROR_STOP=1 -c 'SELECT 1;' 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            throw 'FALLO: pg_hba.conf permitio a usr_api_web conectarse a la base postgres.'
+        }
+        Write-Host '[ok] pg_hba.conf rechaza a usr_api_web fuera de medical_oltp'
     } finally {
         if ($null -eq $previousPassword) {
             Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue

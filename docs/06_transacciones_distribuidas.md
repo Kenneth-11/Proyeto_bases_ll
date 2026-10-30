@@ -16,8 +16,9 @@ La solucion aplicada es el **patron outbox** con sincronizacion idempotente.
 
 ## 2. Transaccion local
 
-`operativo.sp_registrar_estudio` ejecuta dentro de una sola transaccion de
-PostgreSQL:
+`operativo.sp_registrar_estudio` es un **PROCEDURE** (no una funcion) porque
+necesita control de transacciones. Primero llama a
+`operativo.fn_registrar_estudio_local`, que ejecuta en una sola transaccion:
 
 1. `INSERT` en `<region>.ordenes`.
 2. `INSERT` en `<region>.estudios`.
@@ -27,9 +28,24 @@ PostgreSQL:
 Si cualquiera de estos pasos falla, PostgreSQL revierte todo el bloque. No queda
 un estudio sin evento de outbox ni un evento sin estudio.
 
-Despues del `COMMIT` implicito de la funcion, se intenta la sincronizacion
-remota. El resultado remoto no puede revertir la transaccion local ya
-confirmada; por eso se registra en el outbox y en la bitacora.
+Luego el procedimiento ejecuta un **`COMMIT` explicito** y, ya con la
+transaccion local confirmada, llama a `fn_sincronizar_estudio` para escribir en
+MongoDB. Asi se cumple "insercion en PostgreSQL que, tras confirmarse, actualiza
+el documento en MongoDB": el resultado remoto no puede revertir lo local, y si
+MongoDB falla el evento queda `PENDIENTE` en el outbox.
+
+```sql
+CALL operativo.sp_registrar_estudio(
+    'san_jose', 10001, 3, 501,
+    '{"hallazgo": "Sin alteraciones", "conclusion": "Normal"}'::jsonb,
+    'R10.4', 'Dolor abdominal', NULL);   -- devuelve p_id_estudio
+```
+
+> Nota: una funcion (`CREATE FUNCTION`) no puede hacer `COMMIT`; siempre corre
+> dentro de la transaccion de quien la llama. Por eso la version anterior, que
+> sincronizaba dentro de la misma funcion, escribia en MongoDB **antes** del
+> commit local. El `CALL` debe ejecutarse fuera de un `BEGIN` explicito; si no,
+> PostgreSQL responde `invalid transaction termination`.
 
 ## 3. Outbox
 
@@ -51,15 +67,16 @@ Estados:
 ### 3.2 Flujo
 
 ```text
-BEGIN
-  INSERT orden
-  INSERT estudio
-  INSERT diagnostico
-  INSERT outbox (PENDIENTE)
-COMMIT
+CALL sp_registrar_estudio(...)
+  fn_registrar_estudio_local()
+    INSERT orden
+    INSERT estudio
+    INSERT diagnostico
+    INSERT outbox (PENDIENTE)
+  COMMIT                      <- la transaccion local queda confirmada
   |
   v
-fn_sincronizar_estudio()
+fn_sincronizar_estudio()      <- escritura en MongoDB via mongo_fdw
   |
   +-- exito --> outbox = SINCRONIZADO
   +-- fallo --> outbox = PENDIENTE, intentos + 1, ultimo_error = SQLERRM
@@ -100,12 +117,22 @@ es el mismo.
 sincronizacion solo actualiza `estado`, `diagnostico` e `ingresos`, los campos
 anidados se conservan.
 
-Los documentos nuevos insertados por FDW no reciben el subdocumento
-`resultado`, porque el FDW no proyecta objetos anidados como columnas. El
-resultado clinico de un estudio nuevo queda en `<region>.estudios.resultado` y
-en el `payload` del outbox. Los 15 documentos analiticos base si incluyen
+`mongo_fdw` no puede escribir objetos anidados, asi que los documentos nuevos
+reciben el resultado clinico como texto JSON en el campo `resultado_json`. El
+paso 0 de `mongodb/03_aggregations.js` lo convierte en el subdocumento
+`resultado` (`JSON.parse`), de modo que todos los documentos terminan con la
+misma forma del ejemplo del enunciado. Los 15 documentos base ya traen
 `resultado`; la demostracion actualiza uno de ellos para comprobar que el
 subdocumento se conserva.
+
+## 4.2 Exportacion de reportes agregados
+
+`operativo.sp_exportar_indicadores()` calcula en PostgreSQL los indicadores
+mensuales por sucursal (sobre las tres regiones) y reemplaza la coleccion
+`indicadores_mensuales` de MongoDB mediante `mongo_fdw` (`DELETE` + `INSERT`).
+Se ejecuta en `09_export_mongo.sql` y en la demo. Como MongoDB no participa de
+la transaccion, si el `INSERT` falla despues del `DELETE` basta con volver a
+ejecutar la funcion: es idempotente.
 
 ## 5. Garantias y ventanas de inconsistencia
 
@@ -132,14 +159,15 @@ docker stop medical_mongo
 ### 6.2 Registrar un estudio
 
 ```sql
-SELECT operativo.sp_registrar_estudio(
+CALL operativo.sp_registrar_estudio(
     'san_jose',
     10001,
     3,
     501,
     jsonb_build_object('hallazgo', 'Prueba de fallo', 'medida', '5 mm'),
     'R10.4',
-    'Prueba de outbox'
+    'Prueba de outbox',
+    NULL
 );
 ```
 
@@ -232,3 +260,15 @@ El flujo es:
 La consistencia es inmediata dentro de SQL Server. La vista de PostgreSQL puede
 ver el dato con el retraso propio de la consulta remota, no de una
 sincronizacion programada.
+
+### 9.1 Pacientes nuevos y sentido PostgreSQL -> SQL Server
+
+`tds_fdw` no soporta `INSERT`/`UPDATE`/`DELETE`, asi que PostgreSQL no puede
+empujar pacientes nuevos a `integracion.paciente_integracion`. Decision de
+diseno: SQL Server es el sistema de la aseguradora y es quien da de alta la
+afiliacion (`id_paciente`, `id_aseguradora`, `codigo_externo`). Mientras no
+exista ese registro, `api_web.v_paciente_facturacion` muestra el paciente con
+`estado_facturacion = 'SIN_REGISTRO'` (`LEFT JOIN` + `COALESCE`), por lo que la
+vista nunca pierde pacientes locales. Si se necesitara el sentido inverso, la
+alternativa seria un *linked server* en SQL Server hacia PostgreSQL (ODBC) o un
+proceso que lea el outbox y ejecute `usp_*` con `sqlcmd`.

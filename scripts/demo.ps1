@@ -71,16 +71,17 @@ LIMIT 10;
 '@)
 
 Write-Host ''
-Write-Host '--- 4. Insercion en PostgreSQL + sincronizacion a MongoDB (outbox) ---'
+Write-Host '--- 4. Insercion en PostgreSQL + sincronizacion a MongoDB tras COMMIT (outbox) ---'
 $insertOutput = Invoke-PsqlQuery -TupleOnly -Sql @'
-SELECT operativo.sp_registrar_estudio(
+CALL operativo.sp_registrar_estudio(
     'san_jose',
     10001,
     3,
     501,
-     jsonb_build_object('hallazgo', 'Estudio de demostracion', 'medida', '10 mm', 'conclusion', 'Normal'),
+    jsonb_build_object('hallazgo', 'Estudio de demostracion', 'medida', '10 mm', 'conclusion', 'Normal'),
     'R10.4',
-    'Estudio creado durante la demostracion'
+    'Estudio creado durante la demostracion',
+    NULL
 );
 '@
 
@@ -112,6 +113,16 @@ Invoke-MongoScript '03_aggregations.js' @{
 }
 
 Write-Host ''
+Write-Host 'Documento nuevo despues de normalizar resultado_json -> resultado:'
+$exprNormalizado = "JSON.stringify(db.getSiblingDB('reportes_medicos').resultados_estudios.findOne({id_estudio: $newId}, {_id: 0, id_estudio: 1, paciente: 1, tipo: 1, resultado: 1}))"
+Write-Host (Invoke-MongoEval $exprNormalizado)
+
+Write-Host ''
+Write-Host '--- 5b. Exportacion de reportes agregados PostgreSQL -> MongoDB ---'
+Write-Host (Invoke-PsqlQuery 'SELECT operativo.sp_exportar_indicadores() AS indicadores_exportados;')
+Write-Host (Invoke-PsqlQuery 'SELECT periodo, sucursal, total_estudios, ingresos, ticket_promedio FROM reportes_ext.indicadores_mensuales ORDER BY periodo, sucursal;')
+
+Write-Host ''
 Write-Host '--- 6. Roles configurados ---'
 Write-Host (Invoke-PsqlQuery @'
 SELECT rolname, rolcanlogin, rolsuper
@@ -132,7 +143,8 @@ ORDER BY grantee, table_schema, table_name, privilege_type;
 Write-Host ''
 Write-Host '--- 8. Limpieza de los datos creados por la demostracion ---'
 Remove-DemoData | Out-Null
-Write-Host 'Datos de demostracion eliminados; el dataset base queda intacto.'
+Invoke-PsqlQuery 'SELECT operativo.sp_exportar_indicadores();' | Out-Null
+Write-Host 'Datos de demostracion eliminados e indicadores recalculados; el dataset base queda intacto.'
 
 Write-Host ''
 Write-Host 'Demo finalizada.'

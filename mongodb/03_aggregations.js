@@ -1,6 +1,27 @@
 const targetDbName = process.env.MONGO_DB || 'reportes_medicos';
 const target = db.getSiblingDB(targetDbName);
 
+// --------------------------------------------------------------------------
+// 0. Normalizacion: mongo_fdw no puede escribir subdocumentos, asi que los
+// estudios nuevos llegan desde PostgreSQL con el resultado clinico como texto
+// JSON en "resultado_json". Aqui se convierte en el subdocumento "resultado".
+// --------------------------------------------------------------------------
+let normalizados = 0;
+target.resultados_estudios
+  .find({ resultado: { $exists: false }, resultado_json: { $type: 'string' } })
+  .forEach((doc) => {
+    try {
+      target.resultados_estudios.updateOne(
+        { _id: doc._id },
+        { $set: { resultado: JSON.parse(doc.resultado_json) } }
+      );
+      normalizados += 1;
+    } catch (e) {
+      print(`No se pudo convertir resultado_json del estudio ${doc.id_estudio}: ${e.message}`);
+    }
+  });
+print(`=== 0. Documentos normalizados (resultado_json -> resultado): ${normalizados} ===`);
+
 print('=== 1. Productividad por medico y tipo de estudio ===');
 target.resultados_estudios.aggregate([
   {

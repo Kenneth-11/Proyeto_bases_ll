@@ -17,6 +17,50 @@ El build usa paralelismo limitado (`-j2` o `-j4`) para no agotar la memoria de
 WSL 2. Si el daemon se cae durante el build, revisar la seccion de memoria en
 el README.
 
+### 1.1 Archivos de configuracion del servidor
+
+| Archivo | Ruta en el repo | Ruta en el contenedor |
+|---------|-----------------|-----------------------|
+| `postgresql.conf` | `docker/postgres/conf/postgresql.conf` | `/etc/postgresql/postgresql.conf` |
+| `pg_hba.conf` | `docker/postgres/conf/pg_hba.conf` | `/etc/postgresql/pg_hba.conf` |
+| `freetds.conf` | `docker/postgres/conf/freetds.conf` | `/etc/freetds/freetds.conf` |
+
+`docker-compose.yml` arranca PostgreSQL con
+`postgres -c config_file=/etc/postgresql/postgresql.conf`. Parametros relevantes
+para la integracion:
+
+| Parametro | Valor | Motivo |
+|-----------|-------|--------|
+| `listen_addresses` | `'*'` | Aceptar conexiones desde la red Docker y desde las APIs |
+| `hba_file` | `/etc/postgresql/pg_hba.conf` | Reglas de acceso por rol versionadas en el repo |
+| `password_encryption` | `scram-sha-256` | Contrasenas de los 4 perfiles en SCRAM |
+| `log_min_duration_statement` | `500` | Registrar consultas remotas (FDW) lentas |
+| `log_connections` / `log_disconnections` | `on` | Evidencia de que perfil se conecta |
+| `timezone` | `America/Costa_Rica` | Fechas coherentes con MongoDB (`$dateToString`) |
+
+`pg_hba.conf` define una politica distinta por perfil:
+
+| Perfil | Base | Origen permitido | Metodo |
+|--------|------|------------------|--------|
+| `postgres` | todas | socket local / red Docker (`samenet`) | `trust` local, `scram-sha-256` red |
+| `usr_fdw_pg_mssql` | `medical_oltp` | solo red Docker (`samenet`) | `scram-sha-256` |
+| `usr_fdw_pg_mongo` | `medical_oltp` | solo red Docker (`samenet`) | `scram-sha-256` |
+| `usr_api_web` | `medical_oltp` | cualquier origen (aplicacion web) | `scram-sha-256` |
+| `usr_api_mobile` | `medical_oltp` | cualquier origen (aplicacion movil) | `scram-sha-256` |
+| cualquier otro | todas | todos | `reject` |
+
+Verificacion desde `psql`:
+
+```sql
+SHOW config_file;
+SHOW hba_file;
+SELECT line_number, database, user_name, address, auth_method
+FROM pg_hba_file_rules ORDER BY line_number;
+```
+
+> `pg_hba.conf` nombra la base `medical_oltp`. Si se cambia `PG_DB` en `.env`,
+> hay que actualizar tambien esas lineas.
+
 ## 2. tds_fdw: PostgreSQL hacia SQL Server
 
 ### 2.1 Servidor
@@ -168,7 +212,8 @@ CREATE FOREIGN TABLE reportes_ext.resultados_estudios (
     fecha        timestamptz,
     estado       text,
     diagnostico  text,
-    ingresos     numeric(12,2)
+    ingresos     numeric(12,2),
+    resultado_json text
 )
 SERVER mongo_reportes
 OPTIONS (database 'reportes_medicos', collection 'resultados_estudios');
@@ -203,7 +248,8 @@ IF v_mongo_id IS NOT NULL THEN
     UPDATE reportes_ext.resultados_estudios
        SET estado = v_estudio.estado,
            diagnostico = v_estudio.diagnostico,
-           ingresos = COALESCE(v_ingresos, 0)
+           ingresos = COALESCE(v_ingresos, 0),
+           resultado_json = v_estudio.resultado::text
      WHERE _id = v_mongo_id;
 ELSE
     INSERT INTO reportes_ext.resultados_estudios (...) VALUES (...);
@@ -216,15 +262,21 @@ END IF;
 - Los campos anidados no enviados, como `resultado.hallazgo`, se conservan.
 - No se reemplaza el documento completo.
 
-Limitacion: los documentos nuevos creados por `INSERT` a traves del FDW solo
-incluyen los campos planos declarados. El subdocumento `resultado` no se
-escribe por esta via porque `mongo_fdw` no proyecta objetos anidados como
-columnas. El resultado detallado de un estudio nuevo queda en
-`<region>.estudios.resultado` (jsonb) y en el `payload` del outbox; los
-documentos base ya cargados si incluyen `resultado`, y ese subdocumento se
-conserva cuando se actualiza el resto de campos.
+Limitacion y solucion: `mongo_fdw` no escribe objetos anidados. Por eso el
+resultado clinico (`<region>.estudios.resultado`, jsonb) se envia como texto en
+la columna `resultado_json`. El paso 0 de `mongodb/03_aggregations.js` convierte
+ese texto en el subdocumento `resultado` con `JSON.parse`, y desde ahi las
+consultas como `{'resultado.conclusion': /Normal/}` funcionan igual para los
+documentos base y los nuevos.
 
-### 3.4 Prueba
+### 3.4 Exportacion de agregados
+
+```sql
+SELECT operativo.sp_exportar_indicadores();   -- PostgreSQL -> indicadores_mensuales
+SELECT * FROM reportes_ext.indicadores_mensuales;
+```
+
+### 3.5 Prueba
 
 ```sql
 SELECT count(*) FROM reportes_ext.resultados_estudios;
